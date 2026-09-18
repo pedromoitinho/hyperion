@@ -1,57 +1,60 @@
 # Hyperion
 
-Hyperion is a high-performance, deterministic custom memory allocator implemented in C++. It is designed to replace standard library allocation with a specialized strategy focusing on memory alignment, minimal fragmentation, and $O(1)$ bidirectional coalescing.
+A custom memory allocator in C++23, built to study allocator design from the ground up: how an arena is obtained from the kernel, how free blocks are tracked, and how fragmentation is controlled.
 
-### Technical Architecture
-Hyperion manages memory using a **Doubly Linked Free-List** strategy. By interfacing directly with the kernel via the `mmap` system call, the allocator manages a contiguous virtual memory arena, bypassing the overhead of standard user-space wrappers.
+Hyperion requests a contiguous virtual memory arena directly from the kernel with `mmap` and manages it with a doubly linked free list, first-fit placement and constant-time bidirectional coalescing.
 
+## Design
 
+**Arena from the kernel.** Memory comes from `mmap`/`munmap`, not from `malloc`. There is no user-space allocator underneath.
 
-#### Key Features:
-* **Memory Alignment:** Guarantees 8-byte alignment for all allocated pointers using bitwise rounding formulas to ensure optimal CPU cache line performance.
-* **Deterministic Allocation:** Implements a First-Fit search algorithm, providing predictable behavior essential for real-time systems.
-* **Bidirectional Coalescing:** Utilizes a doubly linked list structure to perform $O(1)$ merging of adjacent free blocks in both directions (Forward and Backward). This effectively eliminates external fragmentation.
-* **Zero Standard Library Dependency:** Built using raw pointer arithmetic and POSIX system calls (`mmap`, `munmap`), making it suitable for systems-level environments where the STL may be unavailable or undesirable.
+**Doubly linked free list.** Each block carries a header with its size, state and links to its neighbors. The doubly linked structure is what makes coalescing constant time in both directions: when a block is freed, merging it with the previous and next free blocks requires no traversal.
 
+**First-fit placement.** The allocator walks the free list and takes the first block large enough. This is O(n) in the number of free blocks — simple and predictable in behavior, but not constant time. See *Limitations*.
 
+**Alignment.** Returned pointers are aligned with bitwise rounding so that loads and stores are naturally aligned.
 
----
+**Introspection.** `inspect()` prints a summary of the heap and free-list state; `dump_heap()` prints every block with address, size and status, which makes fragmentation visible while testing.
 
-### Project Structure
-```text
-Hyperion/
-├── include/
-│   └── hyperion.hpp    # Class definitions and metadata structures
-├── src/
-│   └── hyperion.cpp    # Core logic (Alloc/Free/Coalesce)
-├── tests/
-│   └── main.cpp        # Unit tests and stress testing
-└── CMakeLists.txt      # Build configuration
+## Building
 
-Build and Execution
+Requires a C++23 compiler and CMake.
 
-Hyperion utilizes CMake for cross-platform build management. A compiler with C++23 support is required for advanced system features.
-
-1. Configure and Build:
-Bash
-
+```bash
 mkdir build && cd build
 cmake ..
 make
-
-2. Run Tests:
-Bash
-
 ./hyperion_test
+```
 
-Performance & Debugging Tools
+## Layout
 
-Hyperion includes built-in telemetry for heap analysis:
+```
+include/hyperion.hpp   class definitions and block metadata
+src/hyperion.cpp       allocation, deallocation, coalescing
+tests/main.cpp         unit and stress tests
+CMakeLists.txt         build configuration
+```
 
-    inspect(): Provides a high-level summary of the current heap map and free-list state.
+## Limitations
 
-    dump_heap(): Generates a detailed visual representation of the memory arena, displaying block addresses, sizes, and allocation status to assist in identifying fragmentation patterns.
+Stated explicitly, because they define what this allocator is and is not:
 
-License
+- **Not thread-safe.** There is no locking; concurrent use will corrupt the free list.
+- **First-fit is O(n).** Allocation time grows with the number of free blocks. Not suitable for hard real-time use despite the predictable structure.
+- **No size classes or segregated lists.** A single free list means fragmentation behavior depends heavily on allocation patterns.
+- **Alignment is currently 8 bytes.** A drop-in `malloc` replacement on x86-64 must return memory aligned to `alignof(std::max_align_t)`, which is 16. Raising this is the next correctness fix.
+- **No benchmarks yet.** Performance claims are deliberately absent until measured against glibc malloc, jemalloc and mimalloc.
 
-This project is open-source and available under the MIT License.
+## Roadmap
+
+- 16-byte alignment for conformance with `max_align_t`
+- Benchmarks against glibc malloc, jemalloc and mimalloc: throughput, fragmentation and peak RSS
+- Validation under AddressSanitizer and UndefinedBehaviorSanitizer, plus fuzzing of the allocation API
+- Segregated free lists by size class
+- Thread safety, first with a global lock, then with per-thread arenas
+- Hardening of block metadata against corruption
+
+## License
+
+MIT.
